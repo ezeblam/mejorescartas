@@ -91,6 +91,24 @@ function fileToBase64Resized(file, maxDim = 900, quality = 0.82) {
 }
 
 // Envía la foto de la carta a Claude y devuelve {categorias:[{nombre, items:[{nombre,precio,desc}]}]}
+// Limpia restos de formato que a veces se cuelan en las respuestas de la IA
+// (por ejemplo "Nombre) : (Nombre" duplicado, o llaves/paréntesis sueltos al final).
+function limpiarTextoIA(s) {
+  if (!s) return s;
+  let t = String(s).trim();
+  const separadoresDuplicado = [") : (", "):(", ") :(", "): ("];
+  for (const sep of separadoresDuplicado) {
+    const idx = t.indexOf(sep);
+    if (idx > 0) {
+      t = t.slice(0, idx).trim();
+      break;
+    }
+  }
+  t = t.replace(/[)}\]]+\s*$/, "").trim();
+  t = t.replace(/^[({[]+\s*/, "").trim();
+  return t;
+}
+
 async function extraerCartaDeFoto(base64, mediaType) {
   const response = await fetch("/api/extraer-carta", {
     method: "POST",
@@ -106,20 +124,21 @@ async function extraerCartaDeFoto(base64, mediaType) {
   if (!parsed.categorias) throw new Error("Formato inesperado");
   return parsed.categorias.map((cat) => ({
     id: uid(),
-    nombre: cat.nombre || "Categoría",
+    nombre: limpiarTextoIA(cat.nombre) || "Categoría",
     items: (cat.items || []).map((it) => ({
       id: uid(),
-      nombre: it.nombre || "Plato",
+      nombre: limpiarTextoIA(it.nombre) || "Plato",
       precio: it.precio || "0.00",
-      desc: it.desc || "",
+      desc: limpiarTextoIA(it.desc) || "",
       alergenos: [],
       disponible: true,
       foto: null,
       variantes: Array.isArray(it.variantes)
         ? it.variantes
             .filter((v) => v && v.nombre)
-            .map((v) => ({ id: uid(), nombre: v.nombre, precio: v.precio || "0.00" }))
+            .map((v) => ({ id: uid(), nombre: limpiarTextoIA(v.nombre), precio: v.precio || "0.00" }))
         : [],
+      grupos: [],
     })),
   }));
 }
@@ -148,7 +167,7 @@ const nuevoRestaurante = (nombre, slugBase) => ({
 // Todos comparten la contraseña "demo1234" (usuario = su slug).
 async function generarDemoRestaurantes() {
   const hash = await hashPassword("demo1234");
-  const it = (nombre, precio, desc, alergenos = [], disponible = true, variantes = []) => ({
+  const it = (nombre, precio, desc, alergenos = [], disponible = true, variantes = [], grupos = []) => ({
     id: uid(),
     nombre,
     precio,
@@ -157,6 +176,11 @@ async function generarDemoRestaurantes() {
     disponible,
     foto: null,
     variantes: variantes.map((v) => ({ id: uid(), nombre: v.nombre, precio: v.precio })),
+    grupos: grupos.map((g) => ({
+      id: uid(),
+      titulo: g.titulo,
+      opciones: g.opciones.map((o) => ({ id: uid(), nombre: o.nombre, precio: o.precio || "" })),
+    })),
   });
   const cat = (nombre, items) => ({ id: uid(), nombre, items });
 
@@ -283,7 +307,24 @@ async function generarDemoRestaurantes() {
         nombre: "Carta",
         categorias: [
           cat("Desayunos", [
-            it("Tostada con tomate y AOVE", "3.20", "Pan de payés", ["Gluten"]),
+            it(
+              "Tostada con tomate y AOVE",
+              "3.20",
+              "Pan de payés",
+              ["Gluten"],
+              true,
+              [],
+              [
+                {
+                  titulo: "Tipo de pan",
+                  opciones: [
+                    { nombre: "Natural", precio: "" },
+                    { nombre: "Integral", precio: "" },
+                    { nombre: "Pan de horno", precio: "0.50" },
+                  ],
+                },
+              ]
+            ),
             it("Tostada con aguacate", "4.50", "Con huevo poché", ["Gluten", "Huevos"]),
           ]),
           cat("Bollería", [
@@ -1040,6 +1081,7 @@ function ClientePanel({ restaurante, restaurantes, setRestaurantes, onSalir, onV
                           disponible: true,
                           foto: null,
                           variantes: [],
+                          grupos: [],
                         },
                       ],
                     }
@@ -1252,6 +1294,77 @@ function ClientePanel({ restaurante, restaurantes, setRestaurantes, onSalir, onV
       );
       return r;
     });
+  };
+
+  // Helper genérico: aplica una transformación a un plato concreto (evita repetir todo el anidado cada vez)
+  const modificarItem = (catId, itemId, fn) => {
+    update((r) => {
+      r.cartas = r.cartas.map((c) =>
+        c.id === cartaActiva.id
+          ? {
+              ...c,
+              categorias: c.categorias.map((cat) =>
+                cat.id === catId
+                  ? { ...cat, items: cat.items.map((i) => (i.id === itemId ? fn(i) : i)) }
+                  : cat
+              ),
+            }
+          : c
+      );
+      return r;
+    });
+  };
+
+  // Grupos de opciones (ej. "Tipo de pan": Natural / Integral / Pan de horno +0,50€)
+  const addGrupoOpciones = (catId, itemId) => {
+    modificarItem(catId, itemId, (i) => ({
+      ...i,
+      grupos: [
+        ...(i.grupos || []),
+        { id: uid(), titulo: "Nuevas opciones", opciones: [{ id: uid(), nombre: "", precio: "" }] },
+      ],
+    }));
+  };
+
+  const removeGrupoOpciones = (catId, itemId, grupoId) => {
+    if (!confirm("¿Borrar este grupo de opciones entero?")) return;
+    modificarItem(catId, itemId, (i) => ({ ...i, grupos: (i.grupos || []).filter((g) => g.id !== grupoId) }));
+  };
+
+  const updateTituloGrupo = (catId, itemId, grupoId, titulo) => {
+    modificarItem(catId, itemId, (i) => ({
+      ...i,
+      grupos: (i.grupos || []).map((g) => (g.id === grupoId ? { ...g, titulo } : g)),
+    }));
+  };
+
+  const addOpcionAGrupo = (catId, itemId, grupoId) => {
+    modificarItem(catId, itemId, (i) => ({
+      ...i,
+      grupos: (i.grupos || []).map((g) =>
+        g.id === grupoId ? { ...g, opciones: [...g.opciones, { id: uid(), nombre: "", precio: "" }] } : g
+      ),
+    }));
+  };
+
+  const updateOpcion = (catId, itemId, grupoId, opcionId, campo, valor) => {
+    modificarItem(catId, itemId, (i) => ({
+      ...i,
+      grupos: (i.grupos || []).map((g) =>
+        g.id === grupoId
+          ? { ...g, opciones: g.opciones.map((o) => (o.id === opcionId ? { ...o, [campo]: valor } : o)) }
+          : g
+      ),
+    }));
+  };
+
+  const removeOpcion = (catId, itemId, grupoId, opcionId) => {
+    modificarItem(catId, itemId, (i) => ({
+      ...i,
+      grupos: (i.grupos || []).map((g) =>
+        g.id === grupoId ? { ...g, opciones: g.opciones.filter((o) => o.id !== opcionId) } : g
+      ),
+    }));
   };
 
   const eliminarPlato = (catId, itemId, nombrePlato) => {
@@ -1536,6 +1649,56 @@ function ClientePanel({ restaurante, restaurantes, setRestaurantes, onSalir, onV
                   onChange={(e) => updatePlato(cat.id, it.id, "desc", e.target.value)}
                   placeholder="Descripción (opcional)"
                 />
+
+                {/* Grupos de opciones: ej. "Tipo de pan" con Natural / Integral / Pan de horno (+0,50€) */}
+                {(it.grupos || []).map((g) => (
+                  <div key={g.id} style={S.grupoOpcionesCard}>
+                    <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                      <input
+                        style={{ ...S.input, flex: 1 }}
+                        value={g.titulo}
+                        onChange={(e) => updateTituloGrupo(cat.id, it.id, g.id, e.target.value)}
+                        onBlur={(e) => updateTituloGrupo(cat.id, it.id, g.id, capitalizarFrase(e.target.value))}
+                        placeholder="Ej. Tipo de pan"
+                      />
+                      <button style={S.iconBtnDanger} onClick={() => removeGrupoOpciones(cat.id, it.id, g.id)}>
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                    {g.opciones.map((o) => (
+                      <div key={o.id} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+                        <input
+                          style={{ ...S.input, flex: 2 }}
+                          value={o.nombre}
+                          onChange={(e) => updateOpcion(cat.id, it.id, g.id, o.id, "nombre", e.target.value)}
+                          onBlur={(e) =>
+                            updateOpcion(cat.id, it.id, g.id, o.id, "nombre", capitalizarFrase(e.target.value))
+                          }
+                          placeholder="Ej. Pan de horno"
+                        />
+                        <input
+                          style={{ ...S.input, flex: 1 }}
+                          value={o.precio}
+                          onChange={(e) => updateOpcion(cat.id, it.id, g.id, o.id, "precio", e.target.value)}
+                          placeholder="+0.00 (opcional)"
+                        />
+                        <button style={S.iconBtnDanger} onClick={() => removeOpcion(cat.id, it.id, g.id, o.id)}>
+                          <X size={13} />
+                        </button>
+                      </div>
+                    ))}
+                    <button style={S.btnGhostSmall} onClick={() => addOpcionAGrupo(cat.id, it.id, g.id)}>
+                      <Plus size={12} /> Añadir opción
+                    </button>
+                  </div>
+                ))}
+                <button
+                  style={{ ...S.btnGhostSmall, marginTop: 8 }}
+                  onClick={() => addGrupoOpciones(cat.id, it.id)}
+                >
+                  <Plus size={12} /> Añadir opciones a elegir (ej. tipo de pan)
+                </button>
+
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
                   {ALERGENOS.map((a) => (
                     <button
@@ -1591,6 +1754,10 @@ async function traducirCartaAlIngles(carta) {
         nombre: it.nombre,
         desc: it.desc,
         variantes: (it.variantes || []).map((v) => ({ nombre: v.nombre })),
+        grupos: (it.grupos || []).map((g) => ({
+          titulo: g.titulo,
+          opciones: g.opciones.map((o) => ({ nombre: o.nombre })),
+        })),
       })),
     })),
   };
@@ -1617,6 +1784,14 @@ async function traducirCartaAlIngles(carta) {
       variantes: (it.variantes || []).map((v, k) => ({
         ...v,
         nombre: traducido.categorias?.[i]?.items?.[j]?.variantes?.[k]?.nombre || v.nombre,
+      })),
+      grupos: (it.grupos || []).map((g, k) => ({
+        ...g,
+        titulo: traducido.categorias?.[i]?.items?.[j]?.grupos?.[k]?.titulo || g.titulo,
+        opciones: g.opciones.map((o, m) => ({
+          ...o,
+          nombre: traducido.categorias?.[i]?.items?.[j]?.grupos?.[k]?.opciones?.[m]?.nombre || o.nombre,
+        })),
       })),
     })),
   }));
@@ -1795,6 +1970,14 @@ function CartaPublica({ restaurantes, slugInicial, onVolver }) {
                     <span style={S.agotadoTag}>{idioma === "en" ? "Sold out" : "Agotado"}</span>
                   )}
                   {it.desc && <div style={S.publicItemDesc}>{it.desc}</div>}
+                  {(it.grupos || []).map((g) => (
+                    <div key={g.id} style={S.publicGrupoOpciones}>
+                      <span style={S.publicGrupoTitulo}>{g.titulo}: </span>
+                      {g.opciones
+                        .map((o) => (o.precio ? `${o.nombre} (+${o.precio} €)` : o.nombre))
+                        .join(" · ")}
+                    </div>
+                  ))}
                   {it.alergenos.length > 0 && (
                     <div style={S.publicAlergenos}>
                       {idioma === "en" ? "Allergens" : "Alérgenos"}: {it.alergenos.map((a) => traducirAlergeno(a, idioma)).join(", ")}
@@ -2193,6 +2376,13 @@ const S = {
     padding: 12,
     marginBottom: 10,
   },
+  grupoOpcionesCard: {
+    background: "#1C1A16",
+    border: "1px solid #34312A",
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 8,
+  },
   platoFotoThumb: {
     width: 56,
     height: 56,
@@ -2388,6 +2578,8 @@ const S = {
     fontFamily: F.display,
     fontWeight: 400,
   },
+  publicGrupoOpciones: { fontSize: 11.5, color: "#9B9384", marginTop: 5, lineHeight: 1.5 },
+  publicGrupoTitulo: { color: "#C9A227", fontWeight: 600 },
   publicAlergenos: { fontSize: 10.5, color: "#6E685C", marginTop: 6, letterSpacing: 0.3 },
   publicPrice: {
     fontFamily: F.display,

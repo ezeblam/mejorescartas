@@ -21,7 +21,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: 1000,
+        max_tokens: 8000,
         messages: [
           {
             role: "user",
@@ -33,9 +33,9 @@ export default async function handler(req, res) {
                   "Extrae el menú/carta de esta foto de restaurante. Responde ÚNICAMENTE con JSON válido, sin texto adicional, sin backticks ni markdown, con esta forma exacta: " +
                   '{"categorias":[{"nombre":"Entrantes","items":[{"nombre":"Nombre del plato","precio":"0.00","desc":"","variantes":[]}]}]}. ' +
                   "Si un plato tiene UN SOLO precio, ponlo en \"precio\" y deja \"variantes\" como array vacío []. " +
-                  "Si un plato tiene VARIOS precios según el tamaño (por ejemplo tapa/media ración/ración, o pequeño/grande, o distintas unidades), deja \"precio\" como \"0.00\" y en su lugar rellena \"variantes\" con cada opción así: " +
-                  '[{"nombre":"Tapa","precio":"4.00"},{"nombre":"Media ración","precio":"8.00"},{"nombre":"Ración","precio":"14.00"}]. ' +
-                  "Usa el nombre del tamaño tal cual aparece en la carta (Tapa, Media, Ración, Pequeño, Grande, etc.). Agrupa los platos en categorías razonables tal y como aparecen en la carta (o crea categorías lógicas si no las hay). Los precios van solo con el número y dos decimales, sin símbolo de moneda. Si un plato no tiene descripción, deja desc como cadena vacía. Usa el idioma original de la carta.",
+                  "Si un plato tiene VARIOS precios según el tamaño (por ejemplo tapa, media ración y ración, o pequeño y grande), deja \"precio\" como \"0.00\" y en su lugar rellena \"variantes\", cada una con su propio nombre de tamaño y precio. " +
+                  "Usa el nombre del tamaño tal cual aparece en la carta. Agrupa los platos en categorías razonables tal y como aparecen en la carta (o crea categorías lógicas si no las hay). Los precios van solo con el número y dos decimales, sin símbolo de moneda. Si un plato no tiene descripción, deja desc como cadena vacía. Usa el idioma original de la carta. " +
+                  "MUY IMPORTANTE: los campos \"nombre\" y \"desc\" deben contener SOLO el texto real del plato tal cual aparece impreso, sin repetir el nombre dos veces, y sin añadir paréntesis, llaves, dos puntos sueltos ni ningún símbolo que no esté en la carta original. No copies ni imites la sintaxis de este mismo prompt. Tómate el tiempo necesario para completar TODOS los platos de la carta sin prisa ni recortes, aunque haya muchos.",
               },
             ],
           },
